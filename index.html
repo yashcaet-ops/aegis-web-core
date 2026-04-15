@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Aegis Web Core | Field Agent</title>
+    <title>Valuation Zone | Web Agent</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -12,8 +12,9 @@
     <style>
         body { background-color: #050505; color: white; margin: 0; font-family: ui-sans-serif, system-ui; overflow: hidden; }
         .glass-hud { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); }
-        input, select { background: #18181b; color: white; border: 1px solid #3f3f46; padding: 12px; border-radius: 8px; width: 100%; outline: none; }
+        input, select { background: #18181b; color: white; border: 1px solid #3f3f46; padding: 12px; border-radius: 8px; width: 100%; outline: none; margin-bottom: 15px;}
         input:focus { border-color: #8b5cf6; }
+        label { font-size: 10px; font-weight: bold; color: #a1a1aa; letter-spacing: 1px; margin-bottom: 5px; display: block; }
     </style>
 </head>
 <body>
@@ -22,163 +23,121 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // 📡 YOUR EXACT DEPLOYED GOOGLE CLOUD URL
+        // 📡 PASTE YOUR NEW GOOGLE CLOUD DEPLOYMENT URL HERE
         const GOOGLE_CLOUD_URL = "https://script.google.com/macros/s/AKfycbzYtyA2WapRZyun6Hn9e-kNCV5mVUlJbMALChryEwUA7xxEBbYT-ZpQ_b9h_MvhIPij/exec";
         const LIVEKIT_URL = "wss://visioinspect-rx3h9i3c.livekit.cloud";
 
         const WebPortal = () => {
-            const [appMode, setAppMode] = useState('FORM'); // FORM, CONNECTING, INSPECT
-            const [assetType, setAssetType] = useState('Land & Building');
-            const [assetName, setAssetName] = useState('');
+            const [appMode, setAppMode] = useState('FORM');
             const [location, setLocation] = useState({ lat: 0, lng: 0 });
             const [systemTime, setSystemTime] = useState(new Date().toLocaleString());
             const [room, setRoom] = useState(null);
-            
+            const [vaultLink, setVaultLink] = useState('');
             const videoRef = useRef(null);
 
-            // Clock & GPS Engine
+            const [form, setForm] = useState({
+                deviceId: '', operatorName: '', operatorPhone: '', village: '', taluka: '', district: '', company: '', workingStatus: 'Working', meterReading: ''
+            });
+
             useEffect(() => {
                 if (appMode !== 'INSPECT') return;
-                
                 const timer = setInterval(() => setSystemTime(new Date().toLocaleString()), 1000);
-                
-                // HTML5 Geolocation API (Requires HTTPS)
                 let geoId;
                 if ("geolocation" in navigator) {
                     geoId = navigator.geolocation.watchPosition(
                         (pos) => setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-                        (err) => console.warn("GPS Error:", err),
-                        { enableHighAccuracy: true, maximumAge: 2000 }
+                        (err) => console.warn("GPS Error:", err), { enableHighAccuracy: true, maximumAge: 2000 }
                     );
                 }
-                
                 return () => { clearInterval(timer); if(geoId) navigator.geolocation.clearWatch(geoId); };
             }, [appMode]);
 
-            // Radar Heartbeat
             useEffect(() => {
                 if (location.lat === 0 || appMode !== 'INSPECT') return;
                 const heartbeat = setInterval(() => {
-                    fetch(GOOGLE_CLOUD_URL, {
-                        method: 'POST', 
-                        body: JSON.stringify({ action: "heartbeat", deviceId: assetName, lat: location.lat, lng: location.lng })
-                    }).catch(() => {});
+                    fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "heartbeat", deviceId: form.deviceId, lat: location.lat, lng: location.lng }) }).catch(()=>{});
                 }, 5000);
                 return () => clearInterval(heartbeat);
             }, [location, appMode]);
 
-            // Initialize WebRTC & LiveKit
             const startInspection = async () => {
-                if (!assetName) return alert("Asset Identifier required.");
+                if (!form.deviceId || !form.operatorName) return alert("Vehicle ID and Operator Name required.");
                 setAppMode('CONNECTING');
-
                 try {
-                    // 1. Sync Vault
-                    await fetch(GOOGLE_CLOUD_URL, {
-                        method: 'POST', 
-                        body: JSON.stringify({ action: "sync_form", deviceId: assetName, assetType, notes: "Web Portal Test" })
-                    });
+                    const vaultRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "sync_form", ...form }) });
+                    const vaultData = await vaultRes.json();
+                    if (vaultData.folderUrl) setVaultLink(vaultData.folderUrl);
 
-                    // 2. Get Publisher Token
-                    const tokenRes = await fetch(GOOGLE_CLOUD_URL, {
-                        method: 'POST', 
-                        body: JSON.stringify({ action: "get_token", participantId: "WebAgent_" + assetName, isPublisher: true, targetDevice: assetName })
-                    });
+                    const tokenRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "get_token", participantId: "WebAgent_" + form.deviceId, isPublisher: true, targetDevice: form.deviceId }) });
                     const tokenData = await tokenRes.json();
 
-                    // 3. Connect LiveKit & Request Camera
                     const newRoom = new LivekitClient.Room();
                     setRoom(newRoom);
                     await newRoom.connect(LIVEKIT_URL, tokenData.token);
-                    
-                    // Request Web Camera & Microphone
                     await newRoom.localParticipant.enableCameraAndMicrophone();
                     
                     setAppMode('INSPECT');
-
-                    // Attach local camera feed to the video tag
                     setTimeout(() => {
                         const videoTrack = newRoom.localParticipant.videoTrackPublications.values().next().value?.videoTrack;
-                        if (videoTrack && videoRef.current) {
-                            videoTrack.attach(videoRef.current);
-                        }
+                        if (videoTrack && videoRef.current) videoTrack.attach(videoRef.current);
                     }, 500);
-
-                } catch (e) {
-                    alert("Uplink Failed. Ensure you are on HTTPS.");
-                    setAppMode('FORM');
-                }
+                } catch (e) { alert("Uplink Failed. Ensure HTTPS."); setAppMode('FORM'); }
             };
 
             const endMission = async () => {
                 if (room) await room.disconnect();
-                setAppMode('FORM');
-                setLocation({ lat: 0, lng: 0 });
+                const targetNumber = "918155981558";
+                const reportText = `🌐 *VALUATION ZONE: WEB INSPECTION*\n*VIN:* ${form.deviceId}\n*Operator:* ${form.operatorName}\n*Location:* ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}\n*Status:* ${form.workingStatus}\n\n📂 *VAULT:*\n${vaultLink}`;
+                window.location.href = `https://wa.me/${targetNumber}?text=${encodeURIComponent(reportText)}`;
+                setAppMode('FORM'); setLocation({ lat: 0, lng: 0 });
             };
 
-            // --- UI RENDERS ---
             if (appMode === 'FORM' || appMode === 'CONNECTING') {
                 return (
-                    <div className="flex-1 p-6 flex flex-col justify-center max-w-md mx-auto w-full">
-                        <h1 className="text-3xl font-black tracking-widest text-[#8b5cf6] mb-8 text-center">AEGIS <span className="text-white">WEB</span></h1>
+                    <div className="flex-1 p-6 flex flex-col justify-start max-w-md mx-auto w-full overflow-y-auto">
+                        <h1 className="text-3xl font-black tracking-widest text-[#8b5cf6] mb-8 text-center mt-8">VALUATION <span className="text-white">ZONE</span></h1>
                         
-                        <div className="space-y-6">
-                            <div>
-                                <label className="text-xs font-bold text-zinc-400 tracking-widest mb-2 block">ASSET CATEGORY</label>
-                                <select value={assetType} onChange={e => setAssetType(e.target.value)}>
-                                    <option>Land & Building</option>
-                                    <option>Plant & Machinery</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-bold text-zinc-400 tracking-widest mb-2 block">ASSET IDENTIFIER</label>
-                                <input type="text" placeholder="e.g. AcmeTruck01" value={assetName} onChange={e => setAssetName(e.target.value)} />
-                            </div>
-
-                            <button 
-                                onClick={startInspection} 
-                                disabled={appMode === 'CONNECTING'}
-                                className={`w-full py-4 rounded-xl font-black tracking-widest mt-8 transition-all ${appMode === 'CONNECTING' ? 'bg-zinc-700 text-zinc-400' : 'bg-[#10b981] text-black shadow-[0_0_20px_rgba(16,185,129,0.4)]'}`}>
-                                {appMode === 'CONNECTING' ? 'NEGOTIATING UPLINK...' : 'INITIALIZE WEB UPLINK'}
-                            </button>
+                        <label>VEHICLE IDENTITY NO</label><input type="text" onChange={e => setForm({...form, deviceId: e.target.value})} />
+                        <label>OPERATOR / MANAGER NAME</label><input type="text" onChange={e => setForm({...form, operatorName: e.target.value})} />
+                        <label>OPERATOR MOBILE NUMBER</label><input type="tel" onChange={e => setForm({...form, operatorPhone: e.target.value})} />
+                        <label>LOCATION (VILLAGE / CITY)</label><input type="text" onChange={e => setForm({...form, village: e.target.value})} />
+                        
+                        <div className="flex gap-2">
+                            <div className="flex-1"><label>TALUKA</label><input type="text" onChange={e => setForm({...form, taluka: e.target.value})} /></div>
+                            <div className="flex-1"><label>DISTRICT</label><input type="text" onChange={e => setForm({...form, district: e.target.value})} /></div>
                         </div>
+
+                        <label>COMPANY NAME</label><input type="text" onChange={e => setForm({...form, company: e.target.value})} />
+                        <label>METER READING</label><input type="number" onChange={e => setForm({...form, meterReading: e.target.value})} />
+
+                        <div className="flex gap-2 mb-4">
+                            <button onClick={() => setForm({...form, workingStatus: 'Working'})} className={`flex-1 py-3 rounded border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Working' ? 'bg-[#8b5cf6]' : 'bg-black'}`}>WORKING</button>
+                            <button onClick={() => setForm({...form, workingStatus: 'Non-Working'})} className={`flex-1 py-3 rounded border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Non-Working' ? 'bg-[#8b5cf6]' : 'bg-black'}`}>NON-WORKING</button>
+                        </div>
+
+                        <button onClick={startInspection} disabled={appMode === 'CONNECTING'} className={`w-full py-4 rounded-xl font-black tracking-widest mt-4 mb-12 transition-all ${appMode === 'CONNECTING' ? 'bg-zinc-700 text-zinc-400' : 'bg-[#10b981] text-black shadow-[0_0_20px_rgba(16,185,129,0.4)]'}`}>
+                            {appMode === 'CONNECTING' ? 'NEGOTIATING UPLINK...' : 'INITIALIZE WEB UPLINK'}
+                        </button>
                     </div>
                 );
             }
 
             return (
                 <div className="flex-1 relative bg-black">
-                    {/* Local Camera Feed */}
                     <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover absolute inset-0"></video>
-                    
-                    {/* End Mission Button */}
-                    <button onClick={endMission} className="absolute top-6 right-6 z-50 bg-red-600 text-white font-bold px-4 py-2 rounded-full shadow-lg">
-                        END MISSION
-                    </button>
-
-                    {/* Conota HUD Overlay */}
+                    <button onClick={endMission} className="absolute top-6 right-6 z-50 bg-red-600 text-white font-bold px-4 py-2 rounded-full shadow-lg text-xs">END & SHARE</button>
                     <div className="absolute bottom-8 left-4 right-4 z-50 pointer-events-none">
                         <div className="glass-hud p-4 rounded-xl">
-                            <h2 className="text-[#8b5cf6] font-black text-sm tracking-widest mb-2">AEGIS WEB FEED</h2>
-                            <p className="font-mono text-sm mb-1 text-white">ASSET: {assetName}</p>
-                            {location.lat === 0 ? (
-                                <p className="font-mono text-xs text-red-500 animate-pulse">ACQUIRING SATELLITE LOCK...</p>
-                            ) : (
-                                <p className="font-mono text-xs text-emerald-400">LAT: {location.lat.toFixed(6)} | LNG: {location.lng.toFixed(6)}</p>
-                            )}
+                            <h2 className="text-[#8b5cf6] font-black text-sm tracking-widest mb-2">VALUATION ZONE FEED</h2>
+                            <p className="font-mono text-sm mb-1 text-white">VIN: {form.deviceId}</p>
+                            {location.lat === 0 ? <p className="font-mono text-xs text-red-500 animate-pulse">ACQUIRING SATELLITE LOCK...</p> : <p className="font-mono text-xs text-emerald-400">LAT: {location.lat.toFixed(6)} | LNG: {location.lng.toFixed(6)}</p>}
                             <p className="font-mono text-xs text-zinc-300 mt-1">TIME: {systemTime}</p>
-                            
-                            <div className="flex items-center gap-2 mt-3">
-                                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                                <span className="text-[10px] text-red-500 font-bold tracking-widest">LIVE UPLINK SECURE</span>
-                            </div>
+                            <div className="flex items-center gap-2 mt-3"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div><span className="text-[10px] text-red-500 font-bold tracking-widest">LIVE UPLINK SECURE</span></div>
                         </div>
                     </div>
                 </div>
             );
         };
-
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<WebPortal />);
     </script>
