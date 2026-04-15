@@ -4,15 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Valuation Zone | Web Agent</title>
+    
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    
     <style>
         body { background-color: #030305; color: white; margin: 0; font-family: ui-sans-serif, system-ui; overflow: hidden; }
         .glass-panel { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.05); }
-        .input-premium { background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.1); padding: 14px; border-radius: 12px; width: 100%; outline: none; transition: all 0.3s; font-size: 14px; }
+        .input-premium { background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.1); padding: 14px; border-radius: 12px; width: 100%; outline: none; transition: all 0.3s; font-size: 14px; margin-bottom: 15px;}
         .input-premium:focus { border-color: #8b5cf6; box-shadow: 0 0 15px rgba(139,92,246,0.2); }
         .label-premium { font-size: 10px; font-weight: 800; color: #a1a1aa; letter-spacing: 1.5px; margin-bottom: 6px; display: block; text-transform: uppercase; }
         ::-webkit-scrollbar { width: 0px; background: transparent; }
@@ -24,31 +27,37 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // 📡 PASTE YOUR NEW GOOGLE CLOUD URL HERE
-        const GOOGLE_CLOUD_URL = "https://script.google.com/macros/s/AKfycbzYtyA2WapRZyun6Hn9e-kNCV5mVUlJbMALChryEwUA7xxEBbYT-ZpQ_b9h_MvhIPij/exec";
+        // 📡 PASTE YOUR FINAL GOOGLE CLOUD URL HERE
+        const GOOGLE_CLOUD_URL = "YOUR_GOOGLE_CLOUD_URL_HERE";
         const LIVEKIT_URL = "wss://visioinspect-rx3h9i3c.livekit.cloud";
 
         const WebPortal = () => {
             const [appMode, setAppMode] = useState('FORM');
             const [category, setCategory] = useState('Land & Building'); 
+            
+            // Network & GPS State
             const [location, setLocation] = useState({ lat: 0, lng: 0 });
             const [systemTime, setSystemTime] = useState(new Date().toLocaleString());
-            
             const [room, setRoom] = useState(null);
             const [vaultLink, setVaultLink] = useState('');
+            const [vaultFolder, setVaultFolder] = useState('');
+            
+            // Hardware State
             const [isRecordingLocal, setIsRecordingLocal] = useState(false);
-            const [facingMode, setFacingMode] = useState('environment'); // Default to rear camera
+            const [isUploading, setIsUploading] = useState(false);
+            const [facingMode, setFacingMode] = useState('environment'); // Rear camera default
             
             const videoRef = useRef(null);
             const mediaRecorderRef = useRef(null);
             const recordedChunksRef = useRef([]);
 
+            // Universal Form State
             const [form, setForm] = useState({
                 deviceId: '', operatorName: '', operatorPhone: '', village: '', taluka: '', district: '', company: '', workingStatus: 'Working', meterReading: '',
                 ownerName: '', personAtSite: '', contactDetails: '', address: '', locality: '', constructionType: 'RCC', houseType: '1 BHK', otherDetails: ''
             });
 
-            // GPS & Clock
+            // 1. GPS & CLOCK INITIALIZATION
             useEffect(() => {
                 if (appMode !== 'INSPECT') return;
                 const timer = setInterval(() => setSystemTime(new Date().toLocaleString()), 1000);
@@ -56,44 +65,47 @@
                 if ("geolocation" in navigator) {
                     geoId = navigator.geolocation.watchPosition(
                         (pos) => setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-                        (err) => console.warn("GPS Error:", err), { enableHighAccuracy: true, maximumAge: 2000 }
+                        (err) => console.warn("GPS Error:", err), 
+                        { enableHighAccuracy: true, maximumAge: 2000 }
                     );
                 }
                 return () => { clearInterval(timer); if(geoId) navigator.geolocation.clearWatch(geoId); };
             }, [appMode]);
 
-            // 📡 UNLOCKED HEARTBEAT (Bypasses GPS Deadlock for instant HQ Handshake)
+            // 2. UNLOCKED RADAR HEARTBEAT
             useEffect(() => {
                 if (appMode !== 'INSPECT') return; 
-                
                 const pingHQ = () => {
                     fetch(GOOGLE_CLOUD_URL, { 
                         method: 'POST', 
                         body: JSON.stringify({ action: "heartbeat", deviceId: form.deviceId, category, lat: location.lat, lng: location.lng }) 
                     }).catch(()=>{});
                 };
-                
                 pingHQ(); // Fire immediately
                 const heartbeat = setInterval(pingHQ, 5000);
                 return () => clearInterval(heartbeat);
             }, [location, appMode, category, form.deviceId]);
 
+            // 3. INITIALIZE MISSION (DB Sync + Token)
             const startInspection = async () => {
                 if (!form.deviceId) return alert("Identifier (ID/VIN) is required.");
                 setAppMode('CONNECTING');
                 try {
-                    const vaultRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "sync_form", category, ...form }) });
+                    // Create Cloud Vault
+                    const vaultRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "sync_form", category, lat: location.lat, lng: location.lng, ...form }) });
                     const vaultData = await vaultRes.json();
                     if (vaultData.folderUrl) setVaultLink(vaultData.folderUrl);
+                    if (vaultData.folderName) setVaultFolder(vaultData.folderName);
 
+                    // Secure Token
                     const tokenRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "get_token", participantId: "WebAgent_" + form.deviceId, isPublisher: true, targetDevice: form.deviceId }) });
                     const tokenData = await tokenRes.json();
 
+                    // Connect LiveKit
                     const newRoom = new LivekitClient.Room();
                     setRoom(newRoom);
                     await newRoom.connect(LIVEKIT_URL, tokenData.token);
                     
-                    // Enable Audio and specific Camera
                     await newRoom.localParticipant.setMicrophoneEnabled(true);
                     await newRoom.localParticipant.setCameraEnabled(true, { facingMode: 'environment' });
                     
@@ -102,10 +114,10 @@
                         const videoTrack = newRoom.localParticipant.videoTrackPublications.values().next().value?.videoTrack;
                         if (videoTrack && videoRef.current) videoTrack.attach(videoRef.current);
                     }, 500);
-                } catch (e) { alert("Uplink Failed. Ensure HTTPS."); setAppMode('FORM'); }
+                } catch (e) { alert("Uplink Failed. Ensure HTTPS is active."); setAppMode('FORM'); }
             };
 
-            // 🔄 WEB CAMERA FLIP ENGINE
+            // 4. ROBUST CAMERA FLIP
             const flipCamera = async () => {
                 if (!room) return;
                 const newMode = facingMode === 'environment' ? 'user' : 'environment';
@@ -120,15 +132,19 @@
                 } catch (e) { console.warn("Hardware lock prevented camera swap."); }
             };
 
-            // 📸 WEB DVR: TAKE PHOTO
-            const takePhoto = () => {
+            // 5. DIRECT CLOUD VAULT UPLOAD (Photos)
+            const captureAndUpload = async () => {
                 const video = videoRef.current;
                 if (!video) return;
+                setIsUploading(true);
+
+                // Draw to Canvas
                 const canvas = document.createElement("canvas");
                 canvas.width = video.videoWidth; canvas.height = video.videoHeight;
                 const ctx = canvas.getContext("2d");
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 
+                // Add Diamond-Grade HUD Watermark
                 ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(10, 10, 450, 150);
                 ctx.font = "bold 24px sans-serif"; ctx.fillStyle = "#8b5cf6"; 
                 ctx.fillText(`💎 VALUATION ZONE`, 30, 40); 
@@ -137,11 +153,28 @@
                 ctx.fillText(`LOC: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`, 30, 105);
                 ctx.fillText(`TIME: ${new Date().toLocaleString()}`, 30, 135);
 
-                const link = document.createElement("a"); link.href = canvas.toDataURL("image/jpeg", 0.9);
-                link.download = `VZ_Snap_${Date.now()}.jpg`; link.click();
+                // Get Base64 & Local Download
+                const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+                const base64Data = dataUrl.split(',')[1];
+                const fileName = `VZ_Intel_${Date.now()}.jpg`;
+
+                // Save Local Backup
+                const link = document.createElement("a"); link.href = dataUrl; link.download = fileName; link.click();
+
+                // Upload to Cloud
+                try {
+                    const res = await fetch(GOOGLE_CLOUD_URL, { 
+                        method: 'POST', 
+                        body: JSON.stringify({ action: "upload_media", targetFolder: vaultFolder, fileData: base64Data, mimeType: "image/jpeg", fileName: fileName }) 
+                    });
+                    const resData = await res.json();
+                    if(resData.status === "success") alert("UPLOAD COMPLETE\nPhoto secured in Cloud Vault.");
+                } catch (err) { alert("CLOUD ERROR\nPhoto saved locally, but upload failed."); }
+                
+                setIsUploading(false);
             };
 
-            // 🎥 WEB DVR: RECORD VIDEO
+            // 6. LOCAL WEB DVR (Video)
             const toggleRecording = () => {
                 if (isRecordingLocal) {
                     mediaRecorderRef.current.stop();
@@ -158,13 +191,15 @@
                             const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
                             const url = URL.createObjectURL(blob);
                             const a = document.createElement('a'); a.href = url; a.download = `VZ_Video_${Date.now()}.webm`; a.click();
+                            alert("VIDEO SAVED\nFile saved to your local downloads.");
                         };
                         mediaRecorder.start();
                         setIsRecordingLocal(true);
-                    } catch (e) { alert("Recording not supported on this browser."); }
+                    } catch (e) { alert("Recording not supported on this browser/device."); }
                 }
             };
 
+            // 7. WHATSAPP APEX DROP
             const endMission = async () => {
                 if (room) await room.disconnect();
                 const targetNumber = "918155981558";
@@ -173,46 +208,54 @@
                 setAppMode('FORM'); setLocation({ lat: 0, lng: 0 });
             };
 
+            // ==========================================
+            // UI RENDER: INTAKE FORM
+            // ==========================================
             if (appMode === 'FORM' || appMode === 'CONNECTING') {
                 return (
                     <div className="flex-1 p-6 flex flex-col justify-start max-w-md mx-auto w-full overflow-y-auto pb-20">
+                        
+                        {/* HEADER */}
                         <div className="text-center mt-6 mb-8">
                             <div className="w-16 h-16 mx-auto bg-gradient-to-tr from-violet-600 to-fuchsia-600 rounded-2xl flex items-center justify-center text-3xl shadow-[0_0_30px_rgba(139,92,246,0.5)] mb-4">💎</div>
                             <h1 className="text-2xl font-black tracking-widest text-white">VALUATION <span className="text-[#8b5cf6]">ZONE</span></h1>
-                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-1 uppercase">Universal Agent Interface</p>
+                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-1 uppercase">Universal Web Engine</p>
                         </div>
 
+                        {/* UNIVERSAL TOGGLE */}
                         <div className="flex bg-black p-1 rounded-xl border border-zinc-800 mb-8">
                             <button onClick={() => setCategory('Land & Building')} className={`flex-1 py-3 text-xs font-bold rounded-lg transition-all ${category === 'Land & Building' ? 'bg-zinc-800 text-white shadow-lg' : 'text-zinc-500'}`}>LAND & BUILDING</button>
                             <button onClick={() => setCategory('Plant & Machinery')} className={`flex-1 py-3 text-xs font-bold rounded-lg transition-all ${category === 'Plant & Machinery' ? 'bg-zinc-800 text-white shadow-lg' : 'text-zinc-500'}`}>PLANT & MACHINERY</button>
                         </div>
                         
-                        <div className="glass-panel p-5 rounded-2xl mb-8 space-y-4">
-                            <div><label className="label-premium">IDENTIFIER (VIN / ID)</label><input type="text" className="input-premium" onChange={e => setForm({...form, deviceId: e.target.value})} /></div>
+                        {/* FORM FIELDS */}
+                        <div className="glass-panel p-5 rounded-2xl mb-8">
+                            <label className="label-premium">IDENTIFIER (VIN / ID)</label><input type="text" className="input-premium" onChange={e => setForm({...form, deviceId: e.target.value})} />
                             
                             {category === 'Plant & Machinery' ? (
                                 <>
-                                    <div><label className="label-premium">OPERATOR NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, operatorName: e.target.value})} /></div>
-                                    <div><label className="label-premium">OPERATOR MOBILE</label><input type="tel" className="input-premium" onChange={e => setForm({...form, operatorPhone: e.target.value})} /></div>
-                                    <div><label className="label-premium">VILLAGE / CITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, village: e.target.value})} /></div>
+                                    <label className="label-premium">OPERATOR NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, operatorName: e.target.value})} />
+                                    <label className="label-premium">OPERATOR MOBILE</label><input type="tel" className="input-premium" onChange={e => setForm({...form, operatorPhone: e.target.value})} />
+                                    <label className="label-premium">VILLAGE / CITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, village: e.target.value})} />
                                     <div className="flex gap-3">
                                         <div className="flex-1"><label className="label-premium">TALUKA</label><input type="text" className="input-premium" onChange={e => setForm({...form, taluka: e.target.value})} /></div>
                                         <div className="flex-1"><label className="label-premium">DISTRICT</label><input type="text" className="input-premium" onChange={e => setForm({...form, district: e.target.value})} /></div>
                                     </div>
-                                    <div><label className="label-premium">COMPANY NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, company: e.target.value})} /></div>
-                                    <div><label className="label-premium">METER READING</label><input type="number" className="input-premium" onChange={e => setForm({...form, meterReading: e.target.value})} /></div>
-                                    <div className="flex gap-2">
+                                    <label className="label-premium">COMPANY NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, company: e.target.value})} />
+                                    <label className="label-premium">METER READING</label><input type="number" className="input-premium" onChange={e => setForm({...form, meterReading: e.target.value})} />
+                                    
+                                    <div className="flex gap-2 mt-2">
                                         <button onClick={() => setForm({...form, workingStatus: 'Working'})} className={`flex-1 py-3 rounded-xl border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Working' ? 'bg-emerald-600 text-white' : 'bg-black text-zinc-400'}`}>WORKING</button>
                                         <button onClick={() => setForm({...form, workingStatus: 'Non-Working'})} className={`flex-1 py-3 rounded-xl border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Non-Working' ? 'bg-red-600 text-white' : 'bg-black text-zinc-400'}`}>NON-WORKING</button>
                                     </div>
                                 </>
                             ) : (
                                 <>
-                                    <div><label className="label-premium">NAME OF OWNER</label><input type="text" className="input-premium" onChange={e => setForm({...form, ownerName: e.target.value})} /></div>
-                                    <div><label className="label-premium">PERSON AT SITE</label><input type="text" className="input-premium" onChange={e => setForm({...form, personAtSite: e.target.value})} /></div>
-                                    <div><label className="label-premium">CONTACT DETAILS</label><input type="tel" className="input-premium" onChange={e => setForm({...form, contactDetails: e.target.value})} /></div>
-                                    <div><label className="label-premium">PROPERTY POSTAL ADDRESS</label><input type="text" className="input-premium" onChange={e => setForm({...form, address: e.target.value})} /></div>
-                                    <div><label className="label-premium">LOCALITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, locality: e.target.value})} /></div>
+                                    <label className="label-premium">NAME OF OWNER</label><input type="text" className="input-premium" onChange={e => setForm({...form, ownerName: e.target.value})} />
+                                    <label className="label-premium">PERSON AT SITE</label><input type="text" className="input-premium" onChange={e => setForm({...form, personAtSite: e.target.value})} />
+                                    <label className="label-premium">CONTACT DETAILS</label><input type="tel" className="input-premium" onChange={e => setForm({...form, contactDetails: e.target.value})} />
+                                    <label className="label-premium">PROPERTY POSTAL ADDRESS</label><input type="text" className="input-premium" onChange={e => setForm({...form, address: e.target.value})} />
+                                    <label className="label-premium">LOCALITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, locality: e.target.value})} />
                                     <div className="flex gap-3">
                                         <div className="flex-1"><label className="label-premium">CONSTRUCTION</label>
                                             <select className="input-premium" onChange={e => setForm({...form, constructionType: e.target.value})}>
@@ -225,7 +268,7 @@
                                             </select>
                                         </div>
                                     </div>
-                                    <div><label className="label-premium">OTHER DETAILS</label><input type="text" className="input-premium" onChange={e => setForm({...form, otherDetails: e.target.value})} /></div>
+                                    <label className="label-premium">OTHER DETAILS</label><input type="text" className="input-premium" onChange={e => setForm({...form, otherDetails: e.target.value})} />
                                 </>
                             )}
                         </div>
@@ -237,6 +280,9 @@
                 );
             }
 
+            // ==========================================
+            // UI RENDER: LIVE INSPECTION
+            // ==========================================
             return (
                 <div className="flex-1 relative bg-black">
                     <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover absolute inset-0"></video>
@@ -253,7 +299,7 @@
                         </button>
                     </div>
 
-                    {/* HUD */}
+                    {/* HUD OVERLAY */}
                     <div className="absolute top-20 left-4 z-50 pointer-events-none">
                         <div className="glass-panel p-3 rounded-xl border-l-2 border-[#8b5cf6]">
                             <p className="font-mono text-xs text-white uppercase font-bold">{form.deviceId}</p>
@@ -262,16 +308,20 @@
                         </div>
                     </div>
 
-                    {/* APEX CONTROLS (BOTTOM) */}
+                    {/* APEX ACTION CONTROLS (BOTTOM) */}
                     <div className="absolute bottom-8 left-4 right-4 z-50 flex gap-3">
-                        <button onClick={takePhoto} className="flex-1 glass-panel py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all">
-                            <span className="text-xl mb-1">📸</span><span className="text-[10px] font-bold text-white tracking-widest">PHOTO</span>
+                        <button onClick={captureAndUpload} disabled={isUploading} className={`flex-1 py-4 rounded-xl flex flex-col items-center justify-center transition-all ${isUploading ? 'bg-zinc-800 border border-zinc-600' : 'glass-panel border-violet-500/50 active:scale-95'}`}>
+                            {isUploading ? <span className="text-[10px] font-bold text-violet-400 tracking-widest">UPLOADING...</span> : (
+                                <><span className="text-xl mb-1">☁️</span><span className="text-[10px] font-bold text-white tracking-widest">VAULT UPLOAD</span></>
+                            )}
                         </button>
+                        
                         <button onClick={toggleRecording} className={`flex-1 py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all ${isRecordingLocal ? 'bg-red-600 border border-red-500 animate-pulse' : 'glass-panel'}`}>
-                            <span className="text-xl mb-1">{isRecordingLocal ? '⏹' : '🔴'}</span><span className="text-[10px] font-bold text-white tracking-widest">{isRecordingLocal ? 'STOP' : 'VIDEO'}</span>
+                            <span className="text-xl mb-1">{isRecordingLocal ? '⏹' : '🔴'}</span><span className="text-[10px] font-bold text-white tracking-widest">{isRecordingLocal ? 'STOP' : 'LOCAL REC'}</span>
                         </button>
-                        <button onClick={endMission} className="flex-1 bg-gradient-to-tr from-rose-600 to-red-600 py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all shadow-lg shadow-red-900/50">
-                            <span className="text-xl mb-1">📲</span><span className="text-[10px] font-bold text-white tracking-widest">SHARE</span>
+                        
+                        <button onClick={endMission} className="flex-1 bg-gradient-to-tr from-emerald-500 to-teal-500 py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all shadow-lg shadow-emerald-900/50">
+                            <span className="text-xl mb-1">📲</span><span className="text-[10px] font-bold text-black tracking-widest">END & SHARE</span>
                         </button>
                     </div>
                 </div>
