@@ -27,7 +27,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // 📡 PASTE YOUR FINAL GOOGLE CLOUD URL HERE
+        // 🎯 YOUR ACTIVE GOOGLE CLOUD AND LIVEKIT SERVERS
         const GOOGLE_CLOUD_URL = "https://script.google.com/macros/s/AKfycbzYtyA2WapRZyun6Hn9e-kNCV5mVUlJbMALChryEwUA7xxEBbYT-ZpQ_b9h_MvhIPij/exec";
         const LIVEKIT_URL = "wss://visioinspect-rx3h9i3c.livekit.cloud";
 
@@ -86,7 +86,7 @@
                 return () => clearInterval(heartbeat);
             }, [location, appMode, category, form.deviceId]);
 
-            // 3. INITIALIZE MISSION (DB Sync + Token)
+            // 3. INITIALIZE MISSION (Cloud Sync + Token)
             const startInspection = async () => {
                 if (!form.deviceId) return alert("Identifier (ID/VIN) is required.");
                 setAppMode('CONNECTING');
@@ -114,7 +114,11 @@
                         const videoTrack = newRoom.localParticipant.videoTrackPublications.values().next().value?.videoTrack;
                         if (videoTrack && videoRef.current) videoTrack.attach(videoRef.current);
                     }, 500);
-                } catch (e) { alert("Uplink Failed. Ensure HTTPS is active."); setAppMode('FORM'); }
+                } catch (e) { 
+                    // DIAGNOSTIC CATCHER: This will reveal exactly what system is blocking the connection.
+                    alert("CRITICAL FAILURE: " + String(e)); 
+                    setAppMode('FORM'); 
+                }
             };
 
             // 4. ROBUST CAMERA FLIP
