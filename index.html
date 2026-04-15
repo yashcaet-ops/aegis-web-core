@@ -10,11 +10,12 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
     <style>
-        body { background-color: #050505; color: white; margin: 0; font-family: ui-sans-serif, system-ui; overflow: hidden; }
-        .glass-hud { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); }
-        input, select { background: #18181b; color: white; border: 1px solid #3f3f46; padding: 12px; border-radius: 8px; width: 100%; outline: none; margin-bottom: 15px;}
-        input:focus { border-color: #8b5cf6; }
-        label { font-size: 10px; font-weight: bold; color: #a1a1aa; letter-spacing: 1px; margin-bottom: 5px; display: block; }
+        body { background-color: #030305; color: white; margin: 0; font-family: ui-sans-serif, system-ui; overflow: hidden; }
+        .glass-panel { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.05); }
+        .input-premium { background: rgba(0,0,0,0.5); color: white; border: 1px solid rgba(255,255,255,0.1); padding: 14px; border-radius: 12px; width: 100%; outline: none; transition: all 0.3s; font-size: 14px; }
+        .input-premium:focus { border-color: #8b5cf6; box-shadow: 0 0 15px rgba(139,92,246,0.2); }
+        .label-premium { font-size: 10px; font-weight: 800; color: #a1a1aa; letter-spacing: 1.5px; margin-bottom: 6px; display: block; text-transform: uppercase; }
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
     </style>
 </head>
 <body>
@@ -23,22 +24,31 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // 📡 PASTE YOUR NEW GOOGLE CLOUD DEPLOYMENT URL HERE
+        // 📡 PASTE YOUR NEW GOOGLE CLOUD URL HERE
         const GOOGLE_CLOUD_URL = "https://script.google.com/macros/s/AKfycbzYtyA2WapRZyun6Hn9e-kNCV5mVUlJbMALChryEwUA7xxEBbYT-ZpQ_b9h_MvhIPij/exec";
         const LIVEKIT_URL = "wss://visioinspect-rx3h9i3c.livekit.cloud";
 
         const WebPortal = () => {
             const [appMode, setAppMode] = useState('FORM');
+            const [category, setCategory] = useState('Land & Building'); 
             const [location, setLocation] = useState({ lat: 0, lng: 0 });
             const [systemTime, setSystemTime] = useState(new Date().toLocaleString());
+            
             const [room, setRoom] = useState(null);
             const [vaultLink, setVaultLink] = useState('');
+            const [isRecordingLocal, setIsRecordingLocal] = useState(false);
+            const [facingMode, setFacingMode] = useState('environment'); // Default to rear camera
+            
             const videoRef = useRef(null);
+            const mediaRecorderRef = useRef(null);
+            const recordedChunksRef = useRef([]);
 
             const [form, setForm] = useState({
-                deviceId: '', operatorName: '', operatorPhone: '', village: '', taluka: '', district: '', company: '', workingStatus: 'Working', meterReading: ''
+                deviceId: '', operatorName: '', operatorPhone: '', village: '', taluka: '', district: '', company: '', workingStatus: 'Working', meterReading: '',
+                ownerName: '', personAtSite: '', contactDetails: '', address: '', locality: '', constructionType: 'RCC', houseType: '1 BHK', otherDetails: ''
             });
 
+            // GPS & Clock
             useEffect(() => {
                 if (appMode !== 'INSPECT') return;
                 const timer = setInterval(() => setSystemTime(new Date().toLocaleString()), 1000);
@@ -52,19 +62,27 @@
                 return () => { clearInterval(timer); if(geoId) navigator.geolocation.clearWatch(geoId); };
             }, [appMode]);
 
+            // 📡 UNLOCKED HEARTBEAT (Bypasses GPS Deadlock for instant HQ Handshake)
             useEffect(() => {
-                if (location.lat === 0 || appMode !== 'INSPECT') return;
-                const heartbeat = setInterval(() => {
-                    fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "heartbeat", deviceId: form.deviceId, lat: location.lat, lng: location.lng }) }).catch(()=>{});
-                }, 5000);
+                if (appMode !== 'INSPECT') return; 
+                
+                const pingHQ = () => {
+                    fetch(GOOGLE_CLOUD_URL, { 
+                        method: 'POST', 
+                        body: JSON.stringify({ action: "heartbeat", deviceId: form.deviceId, category, lat: location.lat, lng: location.lng }) 
+                    }).catch(()=>{});
+                };
+                
+                pingHQ(); // Fire immediately
+                const heartbeat = setInterval(pingHQ, 5000);
                 return () => clearInterval(heartbeat);
-            }, [location, appMode]);
+            }, [location, appMode, category, form.deviceId]);
 
             const startInspection = async () => {
-                if (!form.deviceId || !form.operatorName) return alert("Vehicle ID and Operator Name required.");
+                if (!form.deviceId) return alert("Identifier (ID/VIN) is required.");
                 setAppMode('CONNECTING');
                 try {
-                    const vaultRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "sync_form", ...form }) });
+                    const vaultRes = await fetch(GOOGLE_CLOUD_URL, { method: 'POST', body: JSON.stringify({ action: "sync_form", category, ...form }) });
                     const vaultData = await vaultRes.json();
                     if (vaultData.folderUrl) setVaultLink(vaultData.folderUrl);
 
@@ -74,7 +92,10 @@
                     const newRoom = new LivekitClient.Room();
                     setRoom(newRoom);
                     await newRoom.connect(LIVEKIT_URL, tokenData.token);
-                    await newRoom.localParticipant.enableCameraAndMicrophone();
+                    
+                    // Enable Audio and specific Camera
+                    await newRoom.localParticipant.setMicrophoneEnabled(true);
+                    await newRoom.localParticipant.setCameraEnabled(true, { facingMode: 'environment' });
                     
                     setAppMode('INSPECT');
                     setTimeout(() => {
@@ -84,39 +105,133 @@
                 } catch (e) { alert("Uplink Failed. Ensure HTTPS."); setAppMode('FORM'); }
             };
 
+            // 🔄 WEB CAMERA FLIP ENGINE
+            const flipCamera = async () => {
+                if (!room) return;
+                const newMode = facingMode === 'environment' ? 'user' : 'environment';
+                setFacingMode(newMode);
+                try {
+                    await room.localParticipant.setCameraEnabled(false);
+                    await room.localParticipant.setCameraEnabled(true, { facingMode: newMode });
+                    setTimeout(() => {
+                        const videoTrack = room.localParticipant.videoTrackPublications.values().next().value?.videoTrack;
+                        if (videoTrack && videoRef.current) videoTrack.attach(videoRef.current);
+                    }, 500);
+                } catch (e) { console.warn("Hardware lock prevented camera swap."); }
+            };
+
+            // 📸 WEB DVR: TAKE PHOTO
+            const takePhoto = () => {
+                const video = videoRef.current;
+                if (!video) return;
+                const canvas = document.createElement("canvas");
+                canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(10, 10, 450, 150);
+                ctx.font = "bold 24px sans-serif"; ctx.fillStyle = "#8b5cf6"; 
+                ctx.fillText(`💎 VALUATION ZONE`, 30, 40); 
+                ctx.fillStyle = "white"; ctx.font = "18px monospace";
+                ctx.fillText(`ID: ${form.deviceId}`, 30, 75);
+                ctx.fillText(`LOC: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`, 30, 105);
+                ctx.fillText(`TIME: ${new Date().toLocaleString()}`, 30, 135);
+
+                const link = document.createElement("a"); link.href = canvas.toDataURL("image/jpeg", 0.9);
+                link.download = `VZ_Snap_${Date.now()}.jpg`; link.click();
+            };
+
+            // 🎥 WEB DVR: RECORD VIDEO
+            const toggleRecording = () => {
+                if (isRecordingLocal) {
+                    mediaRecorderRef.current.stop();
+                    setIsRecordingLocal(false);
+                } else {
+                    const video = videoRef.current;
+                    if (!video || !video.srcObject) return alert("Camera not active.");
+                    try {
+                        const mediaRecorder = new MediaRecorder(video.srcObject, { mimeType: 'video/webm' });
+                        mediaRecorderRef.current = mediaRecorder;
+                        recordedChunksRef.current = [];
+                        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
+                        mediaRecorder.onstop = () => {
+                            const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = `VZ_Video_${Date.now()}.webm`; a.click();
+                        };
+                        mediaRecorder.start();
+                        setIsRecordingLocal(true);
+                    } catch (e) { alert("Recording not supported on this browser."); }
+                }
+            };
+
             const endMission = async () => {
                 if (room) await room.disconnect();
                 const targetNumber = "918155981558";
-                const reportText = `🌐 *VALUATION ZONE: WEB INSPECTION*\n*VIN:* ${form.deviceId}\n*Operator:* ${form.operatorName}\n*Location:* ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}\n*Status:* ${form.workingStatus}\n\n📂 *VAULT:*\n${vaultLink}`;
+                const reportText = `💎 *VALUATION ZONE: INTEL REPORT*\n*Category:* ${category}\n*Identifier:* ${form.deviceId}\n*Location:* ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}\n\n📂 *SECURE CLOUD VAULT:*\n${vaultLink}`;
                 window.location.href = `https://wa.me/${targetNumber}?text=${encodeURIComponent(reportText)}`;
                 setAppMode('FORM'); setLocation({ lat: 0, lng: 0 });
             };
 
             if (appMode === 'FORM' || appMode === 'CONNECTING') {
                 return (
-                    <div className="flex-1 p-6 flex flex-col justify-start max-w-md mx-auto w-full overflow-y-auto">
-                        <h1 className="text-3xl font-black tracking-widest text-[#8b5cf6] mb-8 text-center mt-8">VALUATION <span className="text-white">ZONE</span></h1>
-                        
-                        <label>VEHICLE IDENTITY NO</label><input type="text" onChange={e => setForm({...form, deviceId: e.target.value})} />
-                        <label>OPERATOR / MANAGER NAME</label><input type="text" onChange={e => setForm({...form, operatorName: e.target.value})} />
-                        <label>OPERATOR MOBILE NUMBER</label><input type="tel" onChange={e => setForm({...form, operatorPhone: e.target.value})} />
-                        <label>LOCATION (VILLAGE / CITY)</label><input type="text" onChange={e => setForm({...form, village: e.target.value})} />
-                        
-                        <div className="flex gap-2">
-                            <div className="flex-1"><label>TALUKA</label><input type="text" onChange={e => setForm({...form, taluka: e.target.value})} /></div>
-                            <div className="flex-1"><label>DISTRICT</label><input type="text" onChange={e => setForm({...form, district: e.target.value})} /></div>
+                    <div className="flex-1 p-6 flex flex-col justify-start max-w-md mx-auto w-full overflow-y-auto pb-20">
+                        <div className="text-center mt-6 mb-8">
+                            <div className="w-16 h-16 mx-auto bg-gradient-to-tr from-violet-600 to-fuchsia-600 rounded-2xl flex items-center justify-center text-3xl shadow-[0_0_30px_rgba(139,92,246,0.5)] mb-4">💎</div>
+                            <h1 className="text-2xl font-black tracking-widest text-white">VALUATION <span className="text-[#8b5cf6]">ZONE</span></h1>
+                            <p className="text-[10px] text-zinc-500 font-mono tracking-widest mt-1 uppercase">Universal Agent Interface</p>
                         </div>
 
-                        <label>COMPANY NAME</label><input type="text" onChange={e => setForm({...form, company: e.target.value})} />
-                        <label>METER READING</label><input type="number" onChange={e => setForm({...form, meterReading: e.target.value})} />
-
-                        <div className="flex gap-2 mb-4">
-                            <button onClick={() => setForm({...form, workingStatus: 'Working'})} className={`flex-1 py-3 rounded border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Working' ? 'bg-[#8b5cf6]' : 'bg-black'}`}>WORKING</button>
-                            <button onClick={() => setForm({...form, workingStatus: 'Non-Working'})} className={`flex-1 py-3 rounded border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Non-Working' ? 'bg-[#8b5cf6]' : 'bg-black'}`}>NON-WORKING</button>
+                        <div className="flex bg-black p-1 rounded-xl border border-zinc-800 mb-8">
+                            <button onClick={() => setCategory('Land & Building')} className={`flex-1 py-3 text-xs font-bold rounded-lg transition-all ${category === 'Land & Building' ? 'bg-zinc-800 text-white shadow-lg' : 'text-zinc-500'}`}>LAND & BUILDING</button>
+                            <button onClick={() => setCategory('Plant & Machinery')} className={`flex-1 py-3 text-xs font-bold rounded-lg transition-all ${category === 'Plant & Machinery' ? 'bg-zinc-800 text-white shadow-lg' : 'text-zinc-500'}`}>PLANT & MACHINERY</button>
+                        </div>
+                        
+                        <div className="glass-panel p-5 rounded-2xl mb-8 space-y-4">
+                            <div><label className="label-premium">IDENTIFIER (VIN / ID)</label><input type="text" className="input-premium" onChange={e => setForm({...form, deviceId: e.target.value})} /></div>
+                            
+                            {category === 'Plant & Machinery' ? (
+                                <>
+                                    <div><label className="label-premium">OPERATOR NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, operatorName: e.target.value})} /></div>
+                                    <div><label className="label-premium">OPERATOR MOBILE</label><input type="tel" className="input-premium" onChange={e => setForm({...form, operatorPhone: e.target.value})} /></div>
+                                    <div><label className="label-premium">VILLAGE / CITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, village: e.target.value})} /></div>
+                                    <div className="flex gap-3">
+                                        <div className="flex-1"><label className="label-premium">TALUKA</label><input type="text" className="input-premium" onChange={e => setForm({...form, taluka: e.target.value})} /></div>
+                                        <div className="flex-1"><label className="label-premium">DISTRICT</label><input type="text" className="input-premium" onChange={e => setForm({...form, district: e.target.value})} /></div>
+                                    </div>
+                                    <div><label className="label-premium">COMPANY NAME</label><input type="text" className="input-premium" onChange={e => setForm({...form, company: e.target.value})} /></div>
+                                    <div><label className="label-premium">METER READING</label><input type="number" className="input-premium" onChange={e => setForm({...form, meterReading: e.target.value})} /></div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setForm({...form, workingStatus: 'Working'})} className={`flex-1 py-3 rounded-xl border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Working' ? 'bg-emerald-600 text-white' : 'bg-black text-zinc-400'}`}>WORKING</button>
+                                        <button onClick={() => setForm({...form, workingStatus: 'Non-Working'})} className={`flex-1 py-3 rounded-xl border border-zinc-700 font-bold text-xs ${form.workingStatus === 'Non-Working' ? 'bg-red-600 text-white' : 'bg-black text-zinc-400'}`}>NON-WORKING</button>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div><label className="label-premium">NAME OF OWNER</label><input type="text" className="input-premium" onChange={e => setForm({...form, ownerName: e.target.value})} /></div>
+                                    <div><label className="label-premium">PERSON AT SITE</label><input type="text" className="input-premium" onChange={e => setForm({...form, personAtSite: e.target.value})} /></div>
+                                    <div><label className="label-premium">CONTACT DETAILS</label><input type="tel" className="input-premium" onChange={e => setForm({...form, contactDetails: e.target.value})} /></div>
+                                    <div><label className="label-premium">PROPERTY POSTAL ADDRESS</label><input type="text" className="input-premium" onChange={e => setForm({...form, address: e.target.value})} /></div>
+                                    <div><label className="label-premium">LOCALITY</label><input type="text" className="input-premium" onChange={e => setForm({...form, locality: e.target.value})} /></div>
+                                    <div className="flex gap-3">
+                                        <div className="flex-1"><label className="label-premium">CONSTRUCTION</label>
+                                            <select className="input-premium" onChange={e => setForm({...form, constructionType: e.target.value})}>
+                                                <option>RCC</option><option>Load Bearing</option><option>Other</option>
+                                            </select>
+                                        </div>
+                                        <div className="flex-1"><label className="label-premium">TYPE</label>
+                                            <select className="input-premium" onChange={e => setForm({...form, houseType: e.target.value})}>
+                                                <option>1 BHK</option><option>2 BHK</option><option>3 BHK</option><option>4 BHK</option><option>Other</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div><label className="label-premium">OTHER DETAILS</label><input type="text" className="input-premium" onChange={e => setForm({...form, otherDetails: e.target.value})} /></div>
+                                </>
+                            )}
                         </div>
 
-                        <button onClick={startInspection} disabled={appMode === 'CONNECTING'} className={`w-full py-4 rounded-xl font-black tracking-widest mt-4 mb-12 transition-all ${appMode === 'CONNECTING' ? 'bg-zinc-700 text-zinc-400' : 'bg-[#10b981] text-black shadow-[0_0_20px_rgba(16,185,129,0.4)]'}`}>
-                            {appMode === 'CONNECTING' ? 'NEGOTIATING UPLINK...' : 'INITIALIZE WEB UPLINK'}
+                        <button onClick={startInspection} disabled={appMode === 'CONNECTING'} className={`w-full py-5 rounded-xl font-black tracking-widest text-sm transition-all ${appMode === 'CONNECTING' ? 'bg-zinc-800 text-zinc-500' : 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)] hover:scale-105'}`}>
+                            {appMode === 'CONNECTING' ? 'ESTABLISHING SECURE UPLINK...' : 'INITIALIZE INSPECTION'}
                         </button>
                     </div>
                 );
@@ -125,15 +240,39 @@
             return (
                 <div className="flex-1 relative bg-black">
                     <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover absolute inset-0"></video>
-                    <button onClick={endMission} className="absolute top-6 right-6 z-50 bg-red-600 text-white font-bold px-4 py-2 rounded-full shadow-lg text-xs">END & SHARE</button>
-                    <div className="absolute bottom-8 left-4 right-4 z-50 pointer-events-none">
-                        <div className="glass-hud p-4 rounded-xl">
-                            <h2 className="text-[#8b5cf6] font-black text-sm tracking-widest mb-2">VALUATION ZONE FEED</h2>
-                            <p className="font-mono text-sm mb-1 text-white">VIN: {form.deviceId}</p>
-                            {location.lat === 0 ? <p className="font-mono text-xs text-red-500 animate-pulse">ACQUIRING SATELLITE LOCK...</p> : <p className="font-mono text-xs text-emerald-400">LAT: {location.lat.toFixed(6)} | LNG: {location.lng.toFixed(6)}</p>}
-                            <p className="font-mono text-xs text-zinc-300 mt-1">TIME: {systemTime}</p>
-                            <div className="flex items-center gap-2 mt-3"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div><span className="text-[10px] text-red-500 font-bold tracking-widest">LIVE UPLINK SECURE</span></div>
+                    
+                    {/* TOP STATUS & CAMERA CONTROLS */}
+                    <div className="absolute top-6 left-4 right-4 flex justify-between items-center z-50">
+                        <div className="glass-panel px-3 py-1.5 rounded-lg flex items-center gap-2">
+                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                            <span className="text-[10px] text-white font-bold tracking-widest uppercase">Uplink Live</span>
                         </div>
+                        <button onClick={flipCamera} className="glass-panel px-4 py-2 rounded-full flex items-center gap-2 active:scale-95 transition-all">
+                            <span className="text-sm">🔄</span>
+                            <span className="text-[10px] text-white font-bold tracking-widest uppercase">FLIP LENS</span>
+                        </button>
+                    </div>
+
+                    {/* HUD */}
+                    <div className="absolute top-20 left-4 z-50 pointer-events-none">
+                        <div className="glass-panel p-3 rounded-xl border-l-2 border-[#8b5cf6]">
+                            <p className="font-mono text-xs text-white uppercase font-bold">{form.deviceId}</p>
+                            <p className="font-mono text-[10px] text-zinc-400 mt-1">{category}</p>
+                            {location.lat !== 0 && <p className="font-mono text-[10px] text-emerald-400 mt-1">{location.lat.toFixed(5)}, {location.lng.toFixed(5)}</p>}
+                        </div>
+                    </div>
+
+                    {/* APEX CONTROLS (BOTTOM) */}
+                    <div className="absolute bottom-8 left-4 right-4 z-50 flex gap-3">
+                        <button onClick={takePhoto} className="flex-1 glass-panel py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all">
+                            <span className="text-xl mb-1">📸</span><span className="text-[10px] font-bold text-white tracking-widest">PHOTO</span>
+                        </button>
+                        <button onClick={toggleRecording} className={`flex-1 py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all ${isRecordingLocal ? 'bg-red-600 border border-red-500 animate-pulse' : 'glass-panel'}`}>
+                            <span className="text-xl mb-1">{isRecordingLocal ? '⏹' : '🔴'}</span><span className="text-[10px] font-bold text-white tracking-widest">{isRecordingLocal ? 'STOP' : 'VIDEO'}</span>
+                        </button>
+                        <button onClick={endMission} className="flex-1 bg-gradient-to-tr from-rose-600 to-red-600 py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 transition-all shadow-lg shadow-red-900/50">
+                            <span className="text-xl mb-1">📲</span><span className="text-[10px] font-bold text-white tracking-widest">SHARE</span>
+                        </button>
                     </div>
                 </div>
             );
